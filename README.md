@@ -40,15 +40,18 @@ queries remain for a later phase.
 
 ## Local worker
 
-Sample SQS and schedule events are in `events/`. To try the worker's supported
-local fake-provider path, configure local AWS credentials/SSM values and run:
+Sample SQS and schedule events are in `events/`. Run the SQS event through the
+worker locally with an in-memory repository, an in-memory JPEG, and the fake
+provider (no AWS credentials, SSM values, database, or live provider needed):
 
 ```sh
 uv run python scripts/try_scan.py events/sqs_scan.json
 ```
 
-The script is a stub until the external Postgres and provider adapters are
-implemented. Unit tests use in-memory repositories and no live provider calls.
+The demonstration creates a queued in-memory scan based on the sample message
+and prints only its final status and item count. Unit tests likewise use
+in-memory repositories and no live provider calls. Production Postgres and
+provider adapters remain stubs.
 
 ## Deploy
 
@@ -63,8 +66,8 @@ make deploy STAGE=beta
 ```
 
 The SAM stack creates the worker, scheduled sweeper, encrypted queue and DLQ,
-private temporary-image bucket, alarms, and `ApiAccessPolicy` for attachment
-to the mobile API's Lambda role. Deployment requires the appropriate AWS
+private temporary-image bucket, alarms, and a stage-specific `ApiAccessPolicy`
+for attachment to the mobile API's Lambda role. Deployment requires the appropriate AWS
 credentials and SAM configuration.
 
 See [architecture](docs/ARCHITECTURE.md), [contract](docs/CONTRACT.md),

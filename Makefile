@@ -12,8 +12,8 @@ check:
 	uv run pytest
 
 build:
-	sam build --use-container
+	sam build --template-file infra/template.yaml --use-container
 
 deploy:
 	@if [ "$(STAGE)" != "beta" ] && [ "$(STAGE)" != "prod" ]; then echo "STAGE must be beta or prod"; exit 2; fi
-	sam deploy --config-env $(STAGE) --no-confirm-changeset --no-fail-on-empty-changeset
+	sam deploy --template-file .aws-sam/build/template.yaml --config-env $(STAGE) --no-confirm-changeset --no-fail-on-empty-changeset

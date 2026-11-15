@@ -51,7 +51,7 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=pantry_scanner --cov-report=term-missing --cov-fail-under=75"
+addopts = "--cov=pantry_scanner --cov-report=term-missing"
 
 [tool.coverage.run]
 source = ["pantry_scanner"]

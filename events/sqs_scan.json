@@ -1,0 +1,8 @@
+{
+  "Records": [
+    {
+      "messageId": "11111111-2222-4333-8444-555555555555",
+      "body": "{\"v\":1,\"scan_id\":\"11111111-2222-4333-8444-555555555555\",\"account_id\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\"}"
+    }
+  ]
+}

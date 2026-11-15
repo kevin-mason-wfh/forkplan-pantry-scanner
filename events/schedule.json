@@ -1,0 +1,7 @@
+{
+  "version": "0",
+  "id": "schedule-example",
+  "detail-type": "Scheduled Event",
+  "source": "aws.events",
+  "detail": {}
+}

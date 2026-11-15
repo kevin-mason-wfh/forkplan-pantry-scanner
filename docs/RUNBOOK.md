@@ -6,6 +6,10 @@ Set `PROVIDER` to `claude` or `openai`, set `MODEL` to the chosen provider
 model, and configure `SCAN_BUCKET` and `SSM_PREFIX`. SecureString parameters
 under the prefix are `db-url`, `anthropic-api-key`, and `openai-api-key`.
 Provider keys are only required for the selected provider.
+The worker and sweeper roles permit KMS decryption only when the SSM parameter
+encryption context matches that prefix.
+On x86 development hosts, `make build` requires Docker arm64 emulation; the
+deployment workflow provisions QEMU before the container build.
 
 ## Operations
 

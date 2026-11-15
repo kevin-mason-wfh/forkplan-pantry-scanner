@@ -1,0 +1,1 @@
+"""Forkplan pantry scan worker."""
