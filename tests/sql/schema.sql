@@ -1,0 +1,1 @@
+-- Placeholder only. The external API project owns the production schema.

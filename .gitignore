@@ -1,0 +1,12 @@
+.venv/
+.uv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.aws-sam/
+__pycache__/
+*.py[cod]
+.env
+.DS_Store

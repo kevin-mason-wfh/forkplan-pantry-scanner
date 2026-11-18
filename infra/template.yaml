@@ -1,0 +1,273 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Forkplan pantry photo scan worker
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues: [beta, prod]
+    Default: beta
+  ReservedConcurrency:
+    Type: Number
+    Default: 2
+    MinValue: 2
+  Provider:
+    Type: String
+    AllowedValues: [claude, openai]
+    Default: claude
+  Model:
+    Type: String
+    Default: ""
+  AlarmTopicArn:
+    Type: String
+    Default: ""
+    Description: Optional SNS topic notified by alarms
+
+Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
+
+Resources:
+  ScanBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTemporaryScanObjects
+            Status: Enabled
+            Prefix: scan-temp/
+            ExpirationInDays: 1
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  ScanBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ScanBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt ScanBucket.Arn
+              - !Sub "${ScanBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  ScanDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  ScanQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 900
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ScanDLQ.Arn
+        maxReceiveCount: 3
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: pantry_scanner.handlers.worker.lambda_handler
+      CodeUri: ../src/
+      MemorySize: 1024
+      Timeout: 150
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      Environment:
+        Variables:
+          PROVIDER: !Ref Provider
+          MODEL: !Ref Model
+          SSM_PREFIX: !Sub "/forkplan/pantry-scanner/${Stage}"
+          SCAN_BUCKET: !Ref ScanBucket
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:DeleteObject]
+              Resource: !Sub "${ScanBucket.Arn}/scan-temp/*"
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/forkplan/pantry-scanner/${Stage}/*"
+            - Effect: Allow
+              Action: kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringLike:
+                  kms:EncryptionContext:PARAMETER_ARN: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/forkplan/pantry-scanner/${Stage}/*"
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+      Events:
+        ScanQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ScanQueue.Arn
+            BatchSize: 1
+            ScalingConfig:
+              MaximumConcurrency: !Ref ReservedConcurrency
+            FunctionResponseTypes: [ReportBatchItemFailures]
+    Metadata:
+      BuildMethod: python3.12
+
+  SweeperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: pantry_scanner.handlers.sweeper.lambda_handler
+      CodeUri: ../src/
+      MemorySize: 512
+      Timeout: 120
+      Environment:
+        Variables:
+          SSM_PREFIX: !Sub "/forkplan/pantry-scanner/${Stage}"
+          SCAN_BUCKET: !Ref ScanBucket
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: s3:DeleteObject
+              Resource: !Sub "${ScanBucket.Arn}/scan-temp/*"
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/forkplan/pantry-scanner/${Stage}/*"
+            - Effect: Allow
+              Action: kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringLike:
+                  kms:EncryptionContext:PARAMETER_ARN: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/forkplan/pantry-scanner/${Stage}/*"
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Enabled: true
+    Metadata:
+      BuildMethod: python3.12
+
+  ApiAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "ApiAccessPolicy-${Stage}"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sqs:SendMessage
+            Resource: !GetAtt ScanQueue.Arn
+          - Effect: Allow
+            Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+            Resource: !Sub "${ScanBucket.Arn}/scan-temp/*"
+
+  ScanDLQMessages:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Messages visible in the scan dead-letter queue
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ScanDLQ.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  WorkerErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Pantry scanner worker invocation errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref WorkerFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  ScanQueueAge:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Oldest scan queue message exceeds ten minutes
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ScanQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 600
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  SweeperErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Pantry scanner sweeper invocation errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SweeperFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  ScansFailed:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scans failing (the worker records failures instead of raising)
+      Namespace: Forkplan/PantryScanner
+      MetricName: scans_failed
+      Dimensions:
+        - Name: service
+          Value: pantry-scanner
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+Outputs:
+  QueueUrl:
+    Value: !Ref ScanQueue
+  QueueArn:
+    Value: !GetAtt ScanQueue.Arn
+  BucketName:
+    Value: !Ref ScanBucket
+  ApiAccessPolicyArn:
+    Value: !Ref ApiAccessPolicy
