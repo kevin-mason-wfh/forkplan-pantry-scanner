@@ -16,5 +16,14 @@
 - Use `status = PUBLISHED` as the catalog visibility filter and a ten-minute
   process-local cache boundary. Account ingredients and aliases are fetched
   for each scan.
-- `SsmPrefix` defaults to `/forkplan/pantry-scanner/beta`; deployment overrides
-  it per stage in SAM configuration.
+- The SSM prefix is derived from `Stage` (`/forkplan/pantry-scanner/{Stage}`) so a
+  prod deploy can never read beta parameters.
+- Worker concurrency is capped with the SQS event source `ScalingConfig`
+  (`MaximumConcurrency` = `ReservedConcurrency`, minimum 2) so throttling cannot
+  burn `maxReceiveCount` and send healthy messages to the DLQ.
+- Provider schema retries share a single time budget with the first attempt.
+- After a scan is claimed, failures are recorded on the scan rather than retried
+  through SQS; only failures before the claim are returned as batch item failures.
+- Unknown provider fields are ignored; missing or invalid fields still fail validation.
+- Image keys must start with `scan-temp/{account_id}/{scan_id}/`; others are neither
+  read nor deleted.

@@ -1,8 +1,9 @@
+import time
 from decimal import Decimal
 from io import BytesIO
 
 from PIL import Image
-from tests.conftest import ACCOUNT_ID, SCAN_ID
+from tests.conftest import ACCOUNT_ID, KEY, SCAN_ID
 
 from pantry_scanner.domain.enums import (
     IngredientCategory,
@@ -36,7 +37,7 @@ class MemoryImages:
     def __init__(self, values: dict[str, bytes] | None = None) -> None:
         output = BytesIO()
         Image.new("RGB", (20, 10), "green").save(output, "JPEG")
-        self.values = values or {"scan-temp/account/scan/0.jpg": output.getvalue()}
+        self.values = values or {KEY: output.getvalue()}
         self.deleted: list[str] = []
 
     def get(self, key: str) -> bytes:
@@ -75,7 +76,7 @@ def test_success_claims_completes_and_deletes_photo(memory_repository, settings)
     assert memory_repository.scans[SCAN_ID].status == ScanStatus.COMPLETED
     assert memory_repository.scans[SCAN_ID].result is not None
     assert memory_repository.scans[SCAN_ID].provider == "claude"
-    assert images.deleted == ["scan-temp/account/scan/0.jpg"]
+    assert images.deleted == [KEY]
     item = memory_repository.results[SCAN_ID].items[0]
     assert item.match.source == MatchSource.ACCOUNT
     assert item.quantity.amount == Decimal("1000")
@@ -112,10 +113,10 @@ def test_provider_timeout_fails_without_retry_and_deletes_photo(
 
 
 def test_unreadable_photo_fails_and_is_deleted(memory_repository, settings) -> None:
-    images = MemoryImages({"scan-temp/account/scan/0.jpg": b"not a jpeg"})
+    images = MemoryImages({KEY: b"not a jpeg"})
     worker(memory_repository, settings, FakeProvider(VALID), images).process(message())
     assert memory_repository.errors[SCAN_ID] == ScanErrorCode.NO_IMAGES_USABLE
-    assert images.deleted == ["scan-temp/account/scan/0.jpg"]
+    assert images.deleted == [KEY]
 
 
 def test_conditional_completion_stops_after_mid_analysis_cancel(
@@ -204,3 +205,83 @@ def test_catalog_cache_caches_empty_results() -> None:
     assert catalog.get() == []
     assert catalog.get() == []
     assert calls == 1
+
+
+def test_unknown_provider_fields_are_ignored(memory_repository, settings) -> None:
+    payload = {
+        "items": [{"name": "milk", "category": "DAIRY", "confidence": "high", "extra": 1}],
+        "surprise": True,
+    }
+    provider = SequenceProvider([payload])
+    worker(memory_repository, settings, provider).process(message())
+    assert provider.calls == 1
+    assert memory_repository.scans[SCAN_ID].status == ScanStatus.COMPLETED
+
+
+def test_retry_shares_time_budget(memory_repository, settings) -> None:
+    seen: list[float] = []
+
+    class SlowInvalid:
+        def analyse(self, images, location, timeout_s):
+            seen.append(timeout_s)
+            time.sleep(0.05)
+            return {"items": [{"name": "milk"}]}
+
+    worker(memory_repository, settings, SlowInvalid()).process(message(), remaining_ms=20_100)
+    assert len(seen) == 2 and seen[1] < seen[0]
+
+
+def test_foreign_image_key_is_not_read_or_deleted(memory_repository, settings) -> None:
+    other = "scan-temp/someone-else/other-scan/0.jpg"
+    scan = memory_repository.scans[SCAN_ID]
+    memory_repository.scans[SCAN_ID] = scan.model_copy(update={"image_keys": [other]})
+    images = MemoryImages({other: b"x"})
+    provider = FakeProvider(VALID)
+    worker(memory_repository, settings, provider, images).process(message())
+    assert memory_repository.errors[SCAN_ID] == ScanErrorCode.NO_IMAGES_USABLE
+    assert images.deleted == []
+    assert provider.calls == []
+
+
+def test_merge_flags_uncombinable_amounts(memory_repository, settings) -> None:
+    detections = RawDetections(
+        items=[
+            RawDetection(
+                name="milk",
+                category=IngredientCategory.DAIRY,
+                confidence="high",
+                amount=Decimal("1"),
+                unit=Unit.LITERS,
+            ),
+            RawDetection(
+                name="milk",
+                category=IngredientCategory.DAIRY,
+                confidence="high",
+                amount=Decimal("2"),
+                unit=Unit.EACH,
+            ),
+        ]
+    )
+    worker(memory_repository, settings, FakeProvider(detections)).process(message())
+    quantity = memory_repository.results[SCAN_ID].items[0].quantity
+    assert quantity.is_lower_bound is True
+    assert quantity.unit_mismatch is True
+
+
+def test_merge_takes_amount_when_first_missing(memory_repository, settings) -> None:
+    detections = RawDetections(
+        items=[
+            RawDetection(name="milk", category=IngredientCategory.DAIRY, confidence="high"),
+            RawDetection(
+                name="milk",
+                category=IngredientCategory.DAIRY,
+                confidence="high",
+                amount=Decimal("500"),
+                unit=Unit.MILLILITERS,
+            ),
+        ]
+    )
+    worker(memory_repository, settings, FakeProvider(detections)).process(message())
+    quantity = memory_repository.results[SCAN_ID].items[0].quantity
+    assert quantity.amount == Decimal("500")
+    assert quantity.unit == Unit.MILLILITERS

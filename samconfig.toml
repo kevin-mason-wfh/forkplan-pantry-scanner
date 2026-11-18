@@ -3,13 +3,13 @@ version = 0.1
 [beta.deploy.parameters]
 stack_name = "forkplan-pantry-scanner-beta"
 resolve_s3 = true
-capabilities = "CAPABILITY_IAM"
+capabilities = "CAPABILITY_NAMED_IAM"
 confirm_changeset = false
-parameter_overrides = "Stage=beta SsmPrefix=/forkplan/pantry-scanner/beta"
+parameter_overrides = "Stage=beta"
 
 [prod.deploy.parameters]
 stack_name = "forkplan-pantry-scanner-prod"
 resolve_s3 = true
-capabilities = "CAPABILITY_IAM"
+capabilities = "CAPABILITY_NAMED_IAM"
 confirm_changeset = false
-parameter_overrides = "Stage=prod SsmPrefix=/forkplan/pantry-scanner/prod"
+parameter_overrides = "Stage=prod"

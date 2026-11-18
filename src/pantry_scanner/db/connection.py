@@ -26,8 +26,12 @@ def get_connection(settings: Settings | None = None) -> Any:
             _connection = psycopg.connect(
                 parameter("db-url", config),
                 prepare_threshold=None,
-                options=f"-c statement_timeout={config.statement_timeout_ms}",
             )
+            # Not a startup option: transaction poolers reject those. Repositories behind a
+            # transaction pooler should additionally use SET LOCAL per transaction.
+            timeout_ms = int(config.statement_timeout_ms)
+            _connection.execute(f"SET statement_timeout = {timeout_ms}")
+            _connection.commit()
         return _connection
 
 

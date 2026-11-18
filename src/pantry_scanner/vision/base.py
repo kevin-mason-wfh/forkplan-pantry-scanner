@@ -7,7 +7,7 @@ from pantry_scanner.domain.enums import IngredientCategory, MatchConfidence, Qua
 
 
 class RawDetection(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     name: str
     category: IngredientCategory
@@ -20,7 +20,7 @@ class RawDetection(BaseModel):
 
 
 class RawDetections(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     items: list[RawDetection] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

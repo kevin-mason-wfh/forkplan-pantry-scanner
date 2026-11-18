@@ -27,6 +27,8 @@ def _safe_uuid(value: Any) -> str | None:
 @lru_cache(maxsize=1)
 def _runtime_worker() -> ScanWorker:
     settings = Settings.from_env()
+    if not settings.model:
+        raise RuntimeError("MODEL must be set")
     api_key_parameter = "anthropic-api-key" if settings.provider == "claude" else "openai-api-key"
     api_key = parameter(api_key_parameter, settings)
     parameter("db-url", settings)
@@ -54,6 +56,7 @@ def handle_event(
                 body_object = {}
             if not isinstance(body_object, dict):
                 body_object = {}
+            metrics.add_metric(name="malformed_messages", unit="Count", value=1)
             logger.warning(
                 "Dropping malformed SQS message",
                 extra={
@@ -75,6 +78,7 @@ def handle_event(
     return {"batchItemFailures": failures}
 
 
+@logger.inject_lambda_context(clear_state=True)
 @metrics.log_metrics(capture_cold_start_metric=True)
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, list[dict[str, str]]]:
     return handle_event(event, context, _runtime_worker())

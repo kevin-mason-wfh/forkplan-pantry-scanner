@@ -62,9 +62,9 @@ def test_infrastructure_failure_is_returned_for_retry(settings, memory_repositor
 def test_sweeper_deletes_reported_objects() -> None:
     class Sweeper:
         def sweep(self) -> list[tuple[Any, Any, list[str]]]:
-            return [(ACCOUNT_ID, SCAN_ID, ["scan-temp/account/scan/0.jpg"])]
+            return [(ACCOUNT_ID, SCAN_ID, [f"scan-temp/{ACCOUNT_ID}/{SCAN_ID}/0.jpg"])]
 
     images = MemoryImages()
     result = run_sweeper(Sweeper(), images)  # type: ignore[arg-type]
     assert result == {"deleted_objects": 1}
-    assert images.deleted == ["scan-temp/account/scan/0.jpg"]
+    assert images.deleted == [f"scan-temp/{ACCOUNT_ID}/{SCAN_ID}/0.jpg"]

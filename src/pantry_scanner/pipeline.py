@@ -1,5 +1,6 @@
 import time
 from collections.abc import Callable
+from decimal import Decimal
 from threading import Lock
 from uuid import UUID
 
@@ -65,7 +66,7 @@ def _quantity(detection: RawDetection, match: Match) -> Quantity:
         if unit_family(unit) == unit_family(target) and unit_family(unit) != "discrete":
             try:
                 if amount is not None:
-                    amount = convert_amount(amount, unit, target)
+                    amount = convert_amount(amount, unit, target).quantize(Decimal("0.001"))
                 unit = target
             except ValueError:
                 mismatch = True
@@ -79,6 +80,10 @@ def _quantity(detection: RawDetection, match: Match) -> Quantity:
         is_lower_bound=detection.is_lower_bound,
         unit_mismatch=mismatch,
     )
+
+
+def _owns_key(key: str, scan: ScanRecord) -> bool:
+    return key.startswith(f"scan-temp/{scan.account_id}/{scan.id}/")
 
 
 def _item_key(item: ScanItem) -> tuple[str, str]:
@@ -110,32 +115,42 @@ def _merge_items(items: list[ScanItem]) -> list[ScanItem]:
         current_quantity = existing.quantity
         next_quantity = item.quantity
         amount = current_quantity.amount
-        if (
-            amount is not None
-            and next_quantity.amount is not None
-            and current_quantity.unit == next_quantity.unit
-            and not current_quantity.unit_mismatch
-            and not next_quantity.unit_mismatch
-        ):
-            amount += next_quantity.amount
+        unit = current_quantity.unit
+        lower_bound = current_quantity.is_lower_bound or next_quantity.is_lower_bound
+        mismatch = current_quantity.unit_mismatch or next_quantity.unit_mismatch
+        if next_quantity.amount is not None:
+            if amount is None and not current_quantity.unit_mismatch:
+                amount = next_quantity.amount
+                unit = next_quantity.unit
+            elif (
+                amount is not None
+                and current_quantity.unit == next_quantity.unit
+                and not current_quantity.unit_mismatch
+                and not next_quantity.unit_mismatch
+            ):
+                amount += next_quantity.amount
+            else:
+                # Amounts cannot be combined; keep the first and flag it so the
+                # result is never silently undercounted.
+                lower_bound = True
+                mismatch = True
         confidence = max(
             (current_quantity.confidence, next_quantity.confidence),
             key=_confidence_score,
         )
+        notes = " ".join(dict.fromkeys(n for n in (existing.notes, item.notes) if n)) or None
         merged[key] = existing.model_copy(
             update={
+                "notes": notes,
                 "quantity": current_quantity.model_copy(
                     update={
                         "amount": amount,
-                        "is_lower_bound": (
-                            current_quantity.is_lower_bound or next_quantity.is_lower_bound
-                        ),
-                        "unit_mismatch": (
-                            current_quantity.unit_mismatch or next_quantity.unit_mismatch
-                        ),
+                        "unit": unit,
+                        "is_lower_bound": lower_bound,
+                        "unit_mismatch": mismatch,
                         "confidence": confidence,
                     }
-                )
+                ),
             }
         )
     return list(merged.values())
@@ -177,9 +192,14 @@ def _map_detections(
 def _analyse_with_schema_retry(
     provider: VisionProvider, images: list[bytes], location: str, timeout_s: float
 ) -> RawDetections:
+    # Both attempts share one budget so a retry can never outlive the Lambda.
+    deadline = time.monotonic() + timeout_s
     for attempt in range(2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProviderTimeoutError()
         try:
-            response = provider.analyse(images, location, timeout_s)
+            response = provider.analyse(images, location, remaining)
             return RawDetections.model_validate(response)
         except ValidationError:
             if attempt == 1:
@@ -216,7 +236,7 @@ class ScanWorker:
             return
 
         try:
-            if not scan.image_keys:
+            if not scan.image_keys or not all(_owns_key(key, scan) for key in scan.image_keys):
                 raise ScanProcessingError(ScanErrorCode.NO_IMAGES_USABLE)
             prepared_images: list[bytes] = []
             try:
@@ -281,6 +301,9 @@ class ScanWorker:
             self._fail(scan.id, ScanErrorCode.INTERNAL_ERROR)
         finally:
             for key in scan.image_keys:
+                if not _owns_key(key, scan):
+                    logger.error("Refusing to delete image key outside scan prefix")
+                    continue
                 try:
                     self.images.delete(key)
                 except Exception:

@@ -1,6 +1,5 @@
 from functools import lru_cache
 from typing import Any
-from uuid import UUID
 
 from pantry_scanner.config import Settings
 from pantry_scanner.db.connection import parameter
@@ -30,13 +29,8 @@ def run_sweeper(repository: Any, images: S3ImageSource) -> dict[str, int]:
     return {"deleted_objects": deleted_objects}
 
 
+@logger.inject_lambda_context(clear_state=True)
 @metrics.log_metrics(capture_cold_start_metric=True)
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, int]:
     repository, images = _runtime_dependencies()
     return run_sweeper(repository, images)
-
-
-def scan_cleanup_tuple(
-    account_id: UUID, scan_id: UUID, keys: list[str]
-) -> tuple[UUID, UUID, list[str]]:
-    return account_id, scan_id, keys

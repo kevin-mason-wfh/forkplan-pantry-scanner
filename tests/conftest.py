@@ -11,6 +11,7 @@ from pantry_scanner.domain.models import Ingredient, ScanRecord
 ACCOUNT_ID = UUID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
 SCAN_ID = UUID("11111111-2222-4333-8444-555555555555")
 INGREDIENT_ID = UUID("33333333-4444-4555-8666-777777777777")
+KEY = f"scan-temp/{ACCOUNT_ID}/{SCAN_ID}/0.jpg"
 
 
 @pytest.fixture
@@ -35,7 +36,7 @@ def queued_scan() -> ScanRecord:
         account_id=ACCOUNT_ID,
         status=ScanStatus.QUEUED,
         location="fridge",
-        image_keys=["scan-temp/account/scan/0.jpg"],
+        image_keys=[KEY],
         created_at=datetime.now(UTC),
     )
 
